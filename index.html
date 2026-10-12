@@ -128,7 +128,7 @@
       </svg>
     </div>
     <form id="search" autocomplete="off">
-      <input id="q" type="search" enterkeyhint="search" placeholder="Адрес или место">
+      <input id="q" type="search" enterkeyhint="search" placeholder="Адрес или место — подсказки при вводе">
       <button type="submit">Найти</button>
     </form>
     <ul id="results" hidden></ul>
@@ -181,6 +181,7 @@ let step = MODE === 'to' ? 'b' : 'a';
 const points = { a: null, b: null };
 let markerA = null;
 let here = { lat: null, lon: null, label: '' };   // адрес точки под меткой
+let pinned = null;                                 // место, выбранное из поиска: { lat, lon, label }
 let reverseSeq = 0;
 let reverseTimer = null;
 let toastTimer = null;
@@ -277,6 +278,13 @@ function scheduleReverse() {
   const seq = ++reverseSeq;
   const c = map.getCenter();
   here = { lat: c.lat, lon: c.lng, label: '' };
+  // Метка стоит на выбранном из поиска месте — оставляем его название, а не адрес ближайшего дома
+  if (pinned && Math.abs(c.lat - pinned.lat) < 1e-5 && Math.abs(c.lng - pinned.lon) < 1e-5) {
+    here.label = pinned.label;
+    setAddr(pinned.label, false);
+    return;
+  }
+  pinned = null;
   if (map.getZoom() < 14) {
     setAddr('Приблизьте карту и поставьте метку на место', true);
     return;
@@ -310,8 +318,15 @@ map.on('move', updateMeta);
 map.on('moveend', () => { ui.pin.classList.remove('lift'); scheduleReverse(); updateMeta(); });
 map.on('click', () => { ui.results.hidden = true; });
 
-// ─── Поиск адреса (по кнопке, без автодополнения) ───
-function renderResults(items) {
+// ─── Поиск адреса: подсказки при вводе (Photon) и точный поиск по Enter (Nominatim) ───
+function selectPlace(it) {
+  ui.results.hidden = true;
+  const cut = it.label.indexOf(' · ');
+  pinned = { lat: it.lat, lon: it.lon, label: cut < 0 ? it.label : it.label.slice(0, cut) };
+  map.setView([it.lat, it.lon], 17);
+}
+
+function renderResults(items, isSuggest = false) {
   ui.results.replaceChildren();
   ui.results.hidden = false;
   if (items === null || !items.length) {
@@ -319,7 +334,9 @@ function renderResults(items) {
     li.className = 'info';
     li.textContent = items === null
       ? 'Поиск сейчас недоступен. Передвиньте карту вручную.'
-      : 'Ничего не нашлось. Попробуйте иначе или передвиньте карту вручную.';
+      : isSuggest
+        ? 'Подсказок нет — нажмите «Найти» для точного поиска.'
+        : 'Ничего не нашлось. Попробуйте иначе или передвиньте карту вручную.';
     ui.results.append(li);
     return;
   }
@@ -335,16 +352,91 @@ function renderResults(items) {
       s.textContent = sub;
       li.append(s);
     }
-    li.addEventListener('click', () => {
-      ui.results.hidden = true;
-      map.setView([it.lat, it.lon], 17);
-    });
+    li.addEventListener('click', () => selectPlace(it));
     ui.results.append(li);
   }
 }
 
+// Photon рассчитан на подсказки при вводе; Nominatim это запрещает, поэтому он — только по Enter
+const PHOTON = 'https://photon.komoot.io';
+const PHOTON_BBOX = VIEWBOX
+  ? (([x1, y1, x2, y2]) => [x1, y2, x2, y1].join(','))(VIEWBOX.split(','))
+  : '46.4,40.5,87.4,55.5';
+const suggestCache = new Map();
+let suggestTimer = null;
+let suggestCtrl = null;
+let suggestSeq = 0;
+
+// Та же логика, что photon_label в geo.py бота
+function photonItem(f) {
+  const p = f.properties || {};
+  const [lon, lat] = (f.geometry && f.geometry.coordinates) || [];
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const street = p.street || '';
+  const house = p.housenumber || '';
+  const name = (p.name || '').trim();
+  const main = street && house ? `${street}, ${house}` : street;
+  const parts = [];
+  if (name && name !== street && !main.includes(name)) parts.push(name);
+  if (main) parts.push(main);
+  else if (house && !parts.length) parts.push(house);
+  const title = parts.join(', ').slice(0, 150);
+  if (!title) return null;
+  let area = p.district || p.locality || '';
+  if (!VIEWBOX) {
+    const locality = p.city || p.county || p.state || '';
+    if (locality && locality !== title && locality !== area) area = area ? `${area}, ${locality}` : locality;
+  }
+  return { lat, lon, label: area ? `${title} · ${area}` : title };
+}
+
+function cancelSuggest() {
+  clearTimeout(suggestTimer);
+  suggestSeq++;
+  if (suggestCtrl) suggestCtrl.abort();
+}
+
+async function suggest(q) {
+  const seq = ++suggestSeq;
+  let items = suggestCache.get(q);
+  if (!items) {
+    if (suggestCtrl) suggestCtrl.abort();
+    suggestCtrl = new AbortController();
+    const c = map.getCenter();
+    const params = new URLSearchParams({ q, limit: '10', lat: c.lat.toFixed(4), lon: c.lng.toFixed(4), bbox: PHOTON_BBOX });
+    try {
+      const res = await fetch(`${PHOTON}/api/?${params}`, { signal: suggestCtrl.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      items = [];
+      for (const f of data.features || []) {
+        const it = photonItem(f);
+        if (!it || items.some(x => distanceKm(it.lat, it.lon, x.lat, x.lon) < 0.04)) continue;
+        items.push(it);
+        if (items.length >= 6) break;
+      }
+      suggestCache.set(q, items);
+    } catch (e) {
+      return;   // подсказки необязательны: Enter и «Найти» всё равно работают
+    }
+  }
+  if (seq !== suggestSeq) return;   // пользователь уже ввёл другое
+  renderResults(items, true);
+}
+
+ui.q.addEventListener('input', () => {
+  cancelSuggest();
+  const q = ui.q.value.trim().replace(/\s+/g, ' ').slice(0, 100);
+  if (q.length < 3) {
+    ui.results.hidden = true;
+    return;
+  }
+  suggestTimer = setTimeout(() => suggest(q), 350);
+});
+
 ui.search.addEventListener('submit', async e => {
   e.preventDefault();
+  cancelSuggest();
   const q = ui.q.value.trim().replace(/\s+/g, ' ').slice(0, 150);
   if (q.length < 2) return;
   ui.q.blur();
