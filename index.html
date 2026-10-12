@@ -415,6 +415,7 @@ async function suggest(q) {
         items.push(it);
         if (items.length >= 6) break;
       }
+      if (suggestCache.size > 200) suggestCache.clear();
       suggestCache.set(q, items);
     } catch (e) {
       return;   // подсказки необязательны: Enter и «Найти» всё равно работают
@@ -487,7 +488,10 @@ function browserLocate() {
 ui.locate.addEventListener('click', () => {
   const lm = inTelegram && tg.isVersionAtLeast('8.0') ? tg.LocationManager : null;
   if (!lm) { browserLocate(); return; }
+  let started = false;
   const go = () => {
+    if (started) return;
+    started = true;
     if (!lm.isLocationAvailable) { browserLocate(); return; }
     lm.getLocation(loc => {
       if (loc) flyTo(loc.latitude, loc.longitude);
@@ -495,7 +499,10 @@ ui.locate.addEventListener('click', () => {
       else toast('Не удалось определить местоположение');
     });
   };
-  if (lm.isInited) go(); else lm.init(go);
+  if (lm.isInited) { go(); return; }
+  lm.init(go);
+  // Если клиент Telegram так и не ответил — пробуем геолокацию браузера
+  setTimeout(() => { if (!started) { started = true; browserLocate(); } }, 3000);
 });
 
 // ─── Шаги ───
