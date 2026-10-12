@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Точки поездки</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #16181d);
+    --hint: var(--tg-theme-hint-color, #8b8f98);
+    --btn: var(--tg-theme-button-color, #2481cc);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --sec-bg: var(--tg-theme-secondary-bg-color, #f0f1f4);
+    --a: #1e9e57;
+    --b: #e0413a;
+    --shadow: 0 4px 16px rgba(0, 0, 0, .14);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    height: 100vh;
+    height: var(--tg-viewport-stable-height, 100dvh);
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #mapwrap { position: relative; flex: 1; min-height: 0; }
+  #map { position: absolute; inset: 0; background: var(--sec-bg); }
+
+  /* Метка в центре карты: двигается карта, а не метка */
+  #pin {
+    position: absolute; left: 50%; top: 50%; z-index: 650; pointer-events: none;
+    color: var(--a); transform: translate(-50%, -100%); transition: transform .15s ease;
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35));
+  }
+  body[data-step="b"] #pin { color: var(--b); }
+  #pin.lift { transform: translate(-50%, calc(-100% - 10px)); }
+  #pinShadow {
+    position: absolute; left: 50%; top: 50%; z-index: 649; pointer-events: none;
+    width: 10px; height: 4px; margin: -2px 0 0 -5px; border-radius: 50%; background: rgba(0, 0, 0, .35);
+  }
+  .pin-marker { color: var(--a); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35)); }
+
+  #search {
+    position: absolute; z-index: 1000; top: 10px; left: 10px; right: 10px;
+    display: flex; gap: 6px; padding: 6px; border-radius: 14px; background: var(--bg); box-shadow: var(--shadow);
+  }
+  #q {
+    flex: 1; min-width: 0; border: 0; outline: 0; padding: 8px 10px; border-radius: 10px;
+    background: var(--sec-bg); color: var(--text); font: inherit;
+  }
+  #q::placeholder { color: var(--hint); }
+  #search button {
+    border: 0; border-radius: 10px; padding: 0 14px; background: var(--btn); color: var(--btn-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  #results {
+    position: absolute; z-index: 1000; top: 62px; left: 10px; right: 10px; max-height: 55%;
+    overflow: auto; margin: 0; padding: 4px 0; list-style: none;
+    border-radius: 14px; background: var(--bg); box-shadow: var(--shadow);
+  }
+  #results li { padding: 10px 14px; cursor: pointer; }
+  #results li + li { border-top: 1px solid var(--sec-bg); }
+  #results li.info { cursor: default; color: var(--hint); }
+  #results .sub { color: var(--hint); font-size: 13px; }
+
+  #locate {
+    position: absolute; z-index: 1000; right: 12px; bottom: 28px; width: 46px; height: 46px;
+    border: 0; border-radius: 50%; background: var(--bg); color: var(--btn); box-shadow: var(--shadow);
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .leaflet-control-attribution { font-size: 10px; margin-bottom: 18px !important; }
+
+  #toast {
+    position: absolute; z-index: 1100; left: 50%; top: 70px; transform: translateX(-50%);
+    max-width: calc(100% - 40px); padding: 9px 14px; border-radius: 10px;
+    background: rgba(20, 22, 26, .85); color: #fff; font-size: 14px; text-align: center;
+    opacity: 0; pointer-events: none; transition: opacity .2s ease;
+  }
+  #toast.show { opacity: 1; }
+
+  #sheet {
+    position: relative; z-index: 1001; margin-top: -16px;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    border-radius: 16px 16px 0 0; background: var(--bg); box-shadow: 0 -6px 20px rgba(0, 0, 0, .12);
+  }
+  .steprow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--hint); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--a); }
+  body[data-step="b"] .dot { background: var(--b); }
+  #stepTitle { color: var(--text); font-weight: 600; font-size: 15px; }
+  #stepNo { margin-left: auto; }
+  #addr { margin: 8px 0 4px; min-height: 1.35em; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+  #addr.muted { color: var(--hint); font-weight: 400; font-size: 15px; }
+  #meta { color: var(--hint); font-size: 13px; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 10px; margin-top: 12px; }
+  .actions button {
+    border: 0; border-radius: 12px; padding: 14px 16px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer;
+  }
+  #confirm { flex: 1; background: var(--btn); color: var(--btn-text); }
+  #back { background: var(--sec-bg); color: var(--text); }
+  #debug {
+    margin: 10px 0 0; padding: 10px; border-radius: 10px; background: var(--sec-bg);
+    font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body data-step="a">
+<div id="app">
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div id="pinShadow"></div>
+    <div id="pin">
+      <svg viewBox="0 0 32 44" width="36" height="50" aria-hidden="true">
+        <path fill="currentColor" d="M16 0C7.2 0 0 7.1 0 15.9 0 27.8 16 44 16 44s16-16.2 16-28.1C32 7.1 24.8 0 16 0z"/>
+        <circle cx="16" cy="16" r="10" fill="#fff"/>
+        <text id="pinLetter" x="16" y="21" text-anchor="middle" font-size="14" font-weight="700"
+              font-family="system-ui, sans-serif" fill="currentColor">А</text>
+      </svg>
+    </div>
+    <form id="search" autocomplete="off">
+      <input id="q" type="search" enterkeyhint="search" placeholder="Адрес или место">
+      <button type="submit">Найти</button>
+    </form>
+    <ul id="results" hidden></ul>
+    <button id="locate" type="button" title="Где я" aria-label="Где я">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/>
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+      </svg>
+    </button>
+    <div id="toast" role="status"></div>
+  </div>
+  <div id="sheet">
+    <div class="steprow"><span class="dot"></span><span id="stepTitle">Откуда забрать</span><span id="stepNo"></span></div>
+    <div id="addr" class="muted">Передвиньте карту — метка в центре</div>
+    <div id="meta" hidden></div>
+    <div class="actions">
+      <button id="back" type="button" hidden>← Назад</button>
+      <button id="confirm" type="button">Подтвердить</button>
+    </div>
+    <pre id="debug" hidden></pre>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── Параметры запуска: бот передаёт режим и центр города ───
+const tg = window.Telegram && window.Telegram.WebApp;
+const inTelegram = Boolean(tg && tg.platform && tg.platform !== 'unknown');
+const qs = new URLSearchParams(location.search);
+const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+const MODE = qs.get('mode') === 'to' ? 'to' : 'both';           // both — точки А и Б, to — только Б
+const START = [num(qs.get('lat'), 48.0), num(qs.get('lon'), 67.0)];
+const START_ZOOM = Math.round(num(qs.get('z'), 5));
+const MIN_ZOOM_CONFIRM = 15;
+const NOMINATIM = 'https://nominatim.openstreetmap.org';
+// Поиск адресов в пределах ~30 км от центра города
+const VIEWBOX = START_ZOOM >= 10
+  ? [START[1] - 0.4, START[0] + 0.28, START[1] + 0.4, START[0] - 0.28].map(x => x.toFixed(4)).join(',')
+  : null;
+
+const $ = id => document.getElementById(id);
+const ui = {
+  pin: $('pin'), pinLetter: $('pinLetter'), q: $('q'), search: $('search'), results: $('results'),
+  locate: $('locate'), toast: $('toast'), stepTitle: $('stepTitle'), stepNo: $('stepNo'),
+  addr: $('addr'), meta: $('meta'), back: $('back'), confirm: $('confirm'), debug: $('debug'),
+};
+
+let step = MODE === 'to' ? 'b' : 'a';
+const points = { a: null, b: null };
+let markerA = null;
+let here = { lat: null, lon: null, label: '' };   // адрес точки под меткой
+let reverseSeq = 0;
+let reverseTimer = null;
+let toastTimer = null;
+
+// ─── Утилиты ───
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const h = Math.sin((lat2 - lat1) * r / 2) ** 2 +
+    Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+const fmtKm = km => km.toFixed(1).replace('.', ',') + ' км';
+
+function toast(text) {
+  ui.toast.textContent = text;
+  ui.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 2600);
+}
+
+function haptic() {
+  if (inTelegram && tg.isVersionAtLeast('6.1')) tg.HapticFeedback.impactOccurred('light');
+}
+
+function setAddr(text, muted) {
+  ui.addr.textContent = text;
+  ui.addr.classList.toggle('muted', Boolean(muted));
+}
+
+// ─── Nominatim: не чаще 1 запроса в секунду, без автодополнения ───
+let nomChain = Promise.resolve();
+let nomLast = 0;
+function nominatim(path, params) {
+  const url = `${NOMINATIM}/${path}?` + new URLSearchParams({
+    format: 'jsonv2', addressdetails: '1', 'accept-language': 'ru', ...params,
+  });
+  const call = async () => {
+    const wait = nomLast + 1100 - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    nomLast = Date.now();
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  };
+  const p = nomChain.then(call, call);
+  nomChain = p.catch(() => {});
+  return p;
+}
+
+// Та же логика, что make_label в geo.py бота
+const STREET_KEYS = ['road', 'pedestrian', 'footway', 'path', 'square'];
+const AREA_KEYS = ['suburb', 'city_district', 'neighbourhood', 'quarter', 'residential', 'village', 'town'];
+const LOCALITY_KEYS = ['city', 'town', 'village', 'hamlet', 'county', 'state'];
+const NOISE_WORDS = new Set(['тц', 'трц', 'трк', 'бц', 'жк', 'ул', 'улица', 'д', 'дом', 'г', 'город', 'кв', 'квартира']);
+
+function makeLabel(item, withArea) {
+  const a = item.address || {};
+  const pick = keys => { for (const k of keys) if (a[k]) return a[k]; return ''; };
+  const street = pick(STREET_KEYS);
+  const house = a.house_number || '';
+  let area = pick(AREA_KEYS);
+  let main = '';
+  if (street) main = house ? `${street}, ${house}` : street;
+  else if (house && area) { main = `${area}, ${house}`; area = ''; }
+  const name = (item.name || '').trim();
+  let parts = [];
+  if (name && name !== house && !main.includes(name)) parts.push(name);
+  if (main) parts.push(main);
+  if (!parts.length) {
+    // Запасной вариант: начало полного адреса без почтового индекса
+    parts = (item.display_name || '').split(',').map(s => s.trim()).filter(s => s && !/^\d+$/.test(s)).slice(0, 3);
+  }
+  let label = parts.join(', ');
+  if (withArea && area && !label.includes(area)) label += ` · ${area}`;
+  return label.slice(0, 200);
+}
+
+// ─── Карта ───
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView(START, START_ZOOM);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+L.control.attribution({ position: 'bottomleft', prefix: false })
+  .addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>')
+  .addTo(map);
+
+const PIN_HTML = letter => `<svg viewBox="0 0 32 44" width="30" height="42" aria-hidden="true">
+  <path fill="currentColor" d="M16 0C7.2 0 0 7.1 0 15.9 0 27.8 16 44 16 44s16-16.2 16-28.1C32 7.1 24.8 0 16 0z"/>
+  <circle cx="16" cy="16" r="10" fill="#fff"/>
+  <text x="16" y="21" text-anchor="middle" font-size="14" font-weight="700" font-family="system-ui, sans-serif" fill="currentColor">${letter}</text>
+</svg>`;
+const pinIcon = letter => L.divIcon({ className: 'pin-marker', html: PIN_HTML(letter), iconSize: [30, 42], iconAnchor: [15, 42] });
+
+function scheduleReverse() {
+  clearTimeout(reverseTimer);
+  const seq = ++reverseSeq;
+  const c = map.getCenter();
+  here = { lat: c.lat, lon: c.lng, label: '' };
+  if (map.getZoom() < 14) {
+    setAddr('Приблизьте карту и поставьте метку на место', true);
+    return;
+  }
+  setAddr('Определяю адрес…', true);
+  reverseTimer = setTimeout(async () => {
+    try {
+      const data = await nominatim('reverse', { lat: c.lat.toFixed(6), lon: c.lng.toFixed(6), zoom: '18' });
+      if (seq !== reverseSeq) return;
+      here.label = data && !data.error ? makeLabel(data, false) : '';
+      setAddr(here.label || 'Точка на карте', !here.label);
+    } catch (e) {
+      if (seq === reverseSeq) setAddr('Точка на карте', true);
+    }
+  }, 600);
+}
+
+function updateMeta() {
+  if (step === 'b' && points.a) {
+    const c = map.getCenter();
+    const km = distanceKm(points.a.lat, points.a.lon, c.lat, c.lng);
+    ui.meta.textContent = `А: ${points.a.label || 'точка на карте'} · ≈ ${fmtKm(km)} по прямой`;
+    ui.meta.hidden = false;
+  } else {
+    ui.meta.hidden = true;
+  }
+}
+
+map.on('movestart', () => { ui.pin.classList.add('lift'); reverseSeq++; });
+map.on('move', updateMeta);
+map.on('moveend', () => { ui.pin.classList.remove('lift'); scheduleReverse(); updateMeta(); });
+map.on('click', () => { ui.results.hidden = true; });
+
+// ─── Поиск адреса (по кнопке, без автодополнения) ───
+function renderResults(items) {
+  ui.results.replaceChildren();
+  ui.results.hidden = false;
+  if (items === null || !items.length) {
+    const li = document.createElement('li');
+    li.className = 'info';
+    li.textContent = items === null
+      ? 'Поиск сейчас недоступен. Передвиньте карту вручную.'
+      : 'Ничего не нашлось. Попробуйте иначе или передвиньте карту вручную.';
+    ui.results.append(li);
+    return;
+  }
+  for (const it of items) {
+    const li = document.createElement('li');
+    const cut = it.label.indexOf(' · ');
+    const main = cut < 0 ? it.label : it.label.slice(0, cut);
+    const sub = cut < 0 ? '' : it.label.slice(cut + 3);
+    li.textContent = main;
+    if (sub) {
+      const s = document.createElement('div');
+      s.className = 'sub';
+      s.textContent = sub;
+      li.append(s);
+    }
+    li.addEventListener('click', () => {
+      ui.results.hidden = true;
+      map.setView([it.lat, it.lon], 17);
+    });
+    ui.results.append(li);
+  }
+}
+
+ui.search.addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = ui.q.value.trim().replace(/\s+/g, ' ').slice(0, 150);
+  if (q.length < 2) return;
+  ui.q.blur();
+  renderResults([]);
+  ui.results.firstChild.textContent = 'Ищу…';
+  const base = { q, limit: '8', countrycodes: 'kz' };
+  if (VIEWBOX) Object.assign(base, { viewbox: VIEWBOX, bounded: '1' });
+  try {
+    let data = await nominatim('search', base);
+    if (!data.length) {
+      const cleaned = q.split(' ').filter(w => !NOISE_WORDS.has(w.toLowerCase().replace(/[,.]/g, ''))).join(' ');
+      if (cleaned && cleaned !== q) data = await nominatim('search', { ...base, q: cleaned });
+    }
+    const items = [];
+    for (const it of data) {
+      const lat = parseFloat(it.lat), lon = parseFloat(it.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (items.some(x => distanceKm(lat, lon, x.lat, x.lon) < 0.04)) continue;
+      let label = makeLabel(it, true) || q;
+      if (!VIEWBOX) {
+        // Поиск по всему Казахстану: без населённого пункта адрес неоднозначен
+        const a = it.address || {};
+        const locality = LOCALITY_KEYS.map(k => a[k]).find(Boolean);
+        if (locality && !label.includes(locality)) label = `${label} · ${locality}`;
+      }
+      items.push({ lat, lon, label });
+      if (items.length >= 6) break;
+    }
+    renderResults(items);
+  } catch (err) {
+    renderResults(null);
+  }
+});
+ui.q.addEventListener('focus', () => { if (ui.results.childElementCount) ui.results.hidden = false; });
+
+// ─── Моё местоположение ───
+function flyTo(lat, lon) { map.setView([lat, lon], 17); }
+
+function browserLocate() {
+  if (!navigator.geolocation) { toast('Геолокация недоступна на этом устройстве'); return; }
+  navigator.geolocation.getCurrentPosition(
+    p => flyTo(p.coords.latitude, p.coords.longitude),
+    () => toast('Не удалось определить местоположение'),
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+  );
+}
+
+ui.locate.addEventListener('click', () => {
+  const lm = inTelegram && tg.isVersionAtLeast('8.0') ? tg.LocationManager : null;
+  if (!lm) { browserLocate(); return; }
+  const go = () => {
+    if (!lm.isLocationAvailable) { browserLocate(); return; }
+    lm.getLocation(loc => {
+      if (loc) flyTo(loc.latitude, loc.longitude);
+      else if (lm.isAccessRequested && !lm.isAccessGranted) toast('Разрешите доступ к геолокации в настройках бота');
+      else toast('Не удалось определить местоположение');
+    });
+  };
+  if (lm.isInited) go(); else lm.init(go);
+});
+
+// ─── Шаги ───
+function render() {
+  const isA = step === 'a';
+  document.body.dataset.step = step;
+  ui.pinLetter.textContent = isA ? 'А' : 'Б';
+  ui.stepTitle.textContent = isA ? 'Откуда забрать' : 'Куда едем';
+  ui.stepNo.textContent = MODE === 'both' ? (isA ? 'Шаг 1 из 2' : 'Шаг 2 из 2') : '';
+  ui.confirm.textContent = isA ? 'Подтвердить точку А' : 'Готово';
+  const canBack = !isA && MODE === 'both';
+  ui.back.hidden = !canBack;
+  if (inTelegram) canBack ? tg.BackButton.show() : tg.BackButton.hide();
+  updateMeta();
+  scheduleReverse();
+}
+
+function goBack() {
+  if (step !== 'b' || MODE !== 'both') return;
+  step = 'a';
+  if (markerA) { map.removeLayer(markerA); markerA = null; }
+  if (points.a) map.setView([points.a.lat, points.a.lon], Math.max(map.getZoom(), 16));
+  points.a = null;
+  render();
+}
+
+function finish() {
+  const payload = { v: 1, b: points.b };
+  if (points.a) payload.a = points.a;
+  const data = JSON.stringify(payload);
+  if (!inTelegram) {
+    ui.debug.hidden = false;
+    ui.debug.textContent = 'Открыто вне Telegram — данные не отправлены:\n' + JSON.stringify(payload, null, 2);
+    return;
+  }
+  try {
+    tg.sendData(data);   // Telegram закроет мини-приложение и передаст точки боту
+  } catch (e) {
+    toast('Откройте карту кнопкой «🗺 Выбрать на карте» в чате с ботом');
+  }
+}
+
+ui.confirm.addEventListener('click', () => {
+  if (map.getZoom() < MIN_ZOOM_CONFIRM) {
+    map.setView(map.getCenter(), 16);
+    toast('Приблизил карту — уточните метку и нажмите ещё раз');
+    return;
+  }
+  const c = map.getCenter();
+  const same = here.lat !== null && Math.abs(c.lat - here.lat) < 1e-7 && Math.abs(c.lng - here.lon) < 1e-7;
+  const point = { lat: +c.lat.toFixed(6), lon: +c.lng.toFixed(6), label: same ? here.label : '' };
+  if (step === 'a') {
+    haptic();
+    points.a = point;
+    markerA = L.marker([point.lat, point.lon], { icon: pinIcon('А'), interactive: false, keyboard: false }).addTo(map);
+    step = 'b';
+    render();
+    toast('Точка А сохранена. Теперь — куда едем');
+    return;
+  }
+  if (points.a && distanceKm(points.a.lat, points.a.lon, point.lat, point.lon) < 0.05) {
+    toast('Точки А и Б совпадают — передвиньте карту');
+    return;
+  }
+  haptic();
+  points.b = point;
+  finish();
+});
+ui.back.addEventListener('click', goBack);
+
+// ─── Запуск ───
+if (inTelegram) {
+  tg.ready();
+  tg.expand();
+  if (tg.isVersionAtLeast('7.7')) tg.disableVerticalSwipes();   // свайп по карте не закрывает приложение
+  tg.BackButton.onClick(goBack);
+  tg.onEvent('viewportChanged', () => map.invalidateSize());
+}
+window.addEventListener('resize', () => map.invalidateSize());
+render();
+</script>
+</body>
+</html>
